@@ -17,6 +17,9 @@ import qrcode
 from datetime import datetime
 import hashlib
 import base64
+from tkcalendar import DateEntry
+import barcode
+from barcode.writer import ImageWriter
 
 # Configuración de cifrado para archivos de configuración
 clave_cifrado = b'jvXOzwTyfQusXwZBgh0d2GdT0gMCvdR8oOWkFQPpx9o='
@@ -52,10 +55,85 @@ class MontraDB:
             # Restaurar base de datos directamente en memoria
             self.conn.deserialize(datos_db)
             
+            # Crear tabla Registros si no existe
+            self.crear_tabla_registros()
+            
             return True
             
         except Exception as e:
             print(f"Error al conectar: {e}")
+            return False
+    
+    def crear_tabla_registros(self):
+        """Crea la tabla Registros si no existe"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Registros (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Recibo TEXT NOT NULL,
+                    Codigo TEXT NOT NULL,
+                    Fecha TEXT NOT NULL,
+                    Hora TEXT NOT NULL
+                )
+            ''')
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error al crear tabla Registros: {e}")
+    
+    def guardar_registro(self, recibo, codigo, fecha, hora):
+        """Guarda un registro en la base de datos"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO Registros (Recibo, Codigo, Fecha, Hora)
+                VALUES (?, ?, ?, ?)
+            ''', (recibo, codigo, fecha, hora))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al guardar registro: {e}")
+            return False
+    
+    def buscar_registros(self, recibo=None, fecha=None):
+        """Busca registros por filtros"""
+        try:
+            cursor = self.conn.cursor()
+            query = "SELECT Recibo, Codigo, Fecha, Hora FROM Registros WHERE 1=1"
+            params = []
+            
+            if recibo:
+                query += " AND Recibo LIKE ?"
+                params.append(f"%{recibo}%")
+            
+            if fecha:
+                query += " AND Fecha = ?"
+                params.append(fecha)
+            
+            query += " ORDER BY Fecha DESC, Hora DESC"
+            
+            cursor.execute(query, params)
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error al buscar registros: {e}")
+            return []
+    
+    def guardar_cambios_db(self):
+        """Guarda los cambios de vuelta al archivo encriptado"""
+        try:
+            # Serializar base de datos desde memoria
+            datos_actualizados = self.conn.serialize()
+            
+            # Encriptar
+            datos_encriptados = self.cipher.encrypt(datos_actualizados)
+            
+            # Guardar
+            with open(self.archivo_encriptado, 'wb') as f:
+                f.write(datos_encriptados)
+            
+            return True
+        except Exception as e:
+            print(f"Error al guardar cambios en DB: {e}")
             return False
     
     def desconectar(self):
@@ -90,13 +168,14 @@ class SerialInterface:
             return
 
         # Inicializar variables
-        self.motivos_var = tk.StringVar(value="")
         self.destino_var = tk.StringVar(value="")
         self.clave_cliente_var = tk.StringVar(value="")
+        self.tipo_codigo_var = tk.StringVar(value="QR")
         
         # Variables para QR
         self.qr_codes = []
         self.qr_actual = 0
+        self.recibo_actual = ""
         
         # Colores y estilos para la nueva interfaz
         self.colorbackground = "#36474f"
@@ -118,6 +197,7 @@ class SerialInterface:
         
         # Crear los frames
         self.medicion_frame = tk.Frame(self.content_container, bg="#f0f0f0")
+        self.busqueda_frame = tk.Frame(self.content_container, bg="#f0f0f0")
         self.configuracion_frame = tk.Frame(self.content_container, bg="#f0f0f0")
         
         # Cargar imágenes
@@ -128,6 +208,7 @@ class SerialInterface:
         
         # Crear contenido de las secciones
         self.create_configuracion_tab()
+        self.create_busqueda_tab()
         self.cargar_configuracion()
         self.create_medicion_tab()
         
@@ -180,6 +261,15 @@ class SerialInterface:
         )
         self.medicion_button.pack(padx=10, pady=10)
         
+        # Botón de Búsqueda
+        self.busqueda_button = customtkinter.CTkButton(
+            self.sidebar, 
+            text="BÚSQUEDA",
+            command=self.show_busqueda,
+            **button_style
+        )
+        self.busqueda_button.pack(padx=10, pady=10)
+        
         # Botón de Configuración
         self.configuracion_button = customtkinter.CTkButton(
             self.sidebar, 
@@ -191,9 +281,20 @@ class SerialInterface:
 
     def show_medicion(self):
         """Muestra el panel de medición"""
+        self.busqueda_frame.pack_forget()
         self.configuracion_frame.pack_forget()
         self.medicion_frame.pack(fill="both", expand=True, padx=10)
         self.medicion_button.configure(fg_color="#1f5c87")
+        self.busqueda_button.configure(fg_color=self.color_botones)
+        self.configuracion_button.configure(fg_color=self.color_botones)
+
+    def show_busqueda(self):
+        """Muestra el panel de búsqueda"""
+        self.medicion_frame.pack_forget()
+        self.configuracion_frame.pack_forget()
+        self.busqueda_frame.pack(fill="both", expand=True, padx=10)
+        self.busqueda_button.configure(fg_color="#1f5c87")
+        self.medicion_button.configure(fg_color=self.color_botones)
         self.configuracion_button.configure(fg_color=self.color_botones)
 
     def show_configuracion(self):
@@ -201,70 +302,77 @@ class SerialInterface:
         self.login_window = tk.Toplevel(self.root)
         self.login_window.title("Acceso")
         
-        position_x = int(self.root.winfo_x() + (self.root.winfo_width() / 2) - (350 / 2))
-        position_y = int(self.root.winfo_y() + (self.root.winfo_height() / 2) - (220 / 2))
-        self.login_window.geometry(f"{350}x{250}+{position_x}+{position_y}")
+        # Ventana más grande
+        position_x = int(self.root.winfo_x() + (self.root.winfo_width() / 2) - (400 / 2))
+        position_y = int(self.root.winfo_y() + (self.root.winfo_height() / 2) - (350 / 2))
+        self.login_window.geometry(f"{400}x{350}+{position_x}+{position_y}")
         self.login_window.resizable(False, False)
         self.login_window.attributes("-topmost", True)
         self.login_window.configure(bg="#f0f0f0")
         
-        login_frame = tk.Frame(self.login_window, bg="#f0f0f0", padx=25, pady=25)
+        # Agregar icono
+        try:
+            self.login_window.iconbitmap("Icons/montra.ico")
+        except:
+            pass
+        
+        login_frame = tk.Frame(self.login_window, bg="#f0f0f0", padx=30, pady=30)
         login_frame.pack(fill="both", expand=True)
-        login_frame.columnconfigure(1, weight=1)
+        login_frame.columnconfigure(0, weight=1)
         
         # Título
         title_label = tk.Label(
             login_frame, 
             text="Ingrese sus Credenciales", 
-            font=("Helvetica", 12, "bold"),
+            font=("Helvetica", 14, "bold"),
             bg="#f0f0f0"
         )
-        title_label.grid(row=0, column=0, columnspan=2, pady=(0, 20), sticky="ew")
+        title_label.grid(row=1, column=0, pady=(0, 30))
+        
+        # Container para campos
+        campos_container = tk.Frame(login_frame, bg="#f0f0f0")
+        campos_container.grid(row=2, column=0, sticky="ew", pady=(0, 20))
+        campos_container.columnconfigure(0, weight=1)
         
         # Usuario
         username_label = tk.Label(
-            login_frame, 
+            campos_container, 
             text="Usuario:", 
-            font=("Helvetica", 11),
+            font=("Helvetica", 12, "bold"),
             bg="#f0f0f0",
-            anchor="w",
-            width=10
+            anchor="w"
         )
-        username_label.grid(row=1, column=0, padx=5, pady=8, sticky="w")
+        username_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
         
         username_var = tk.StringVar()
         username_entry = ttk.Entry(
-            login_frame, 
+            campos_container, 
             textvariable=username_var,
-            font=("Helvetica", 11),
-            width=20
+            font=("Helvetica", 12),
+            width=30
         )
-        username_entry.grid(row=1, column=1, padx=5, pady=8, sticky="ew")
+        username_entry.grid(row=1, column=0, sticky="ew", pady=(0, 15))
         username_entry.focus_set()
         
         # Contraseña
         password_label = tk.Label(
-            login_frame, 
+            campos_container, 
             text="Contraseña:", 
-            font=("Helvetica", 11),
+            font=("Helvetica", 12, "bold"),
             bg="#f0f0f0",
-            anchor="w",
-            width=10
+            anchor="w"
         )
-        password_label.grid(row=2, column=0, padx=5, pady=8, sticky="w")
+        password_label.grid(row=2, column=0, sticky="w", pady=(0, 5))
         
         password_var = tk.StringVar()
         password_entry = ttk.Entry(
-            login_frame, 
+            campos_container, 
             textvariable=password_var,
             show="*", 
-            font=("Helvetica", 11),
-            width=20
+            font=("Helvetica", 12),
+            width=30
         )
-        password_entry.grid(row=2, column=1, padx=5, pady=8, sticky="ew")
-
-        spacer = tk.Frame(login_frame, height=20, bg="#f0f0f0")
-        spacer.grid(row=3, column=0, columnspan=2)
+        password_entry.grid(row=3, column=0, sticky="ew")
         
         def check_credentials_local():
             username = username_var.get()
@@ -272,25 +380,27 @@ class SerialInterface:
             if self.db.verificar_credenciales(username, password):
                 self.login_window.destroy()
                 self.medicion_frame.pack_forget()
+                self.busqueda_frame.pack_forget()
                 self.configuracion_frame.pack(fill="both", expand=True)
                 self.configuracion_button.configure(fg_color="#1f5c87")
                 self.medicion_button.configure(fg_color=self.color_botones)
+                self.busqueda_button.configure(fg_color=self.color_botones)
             else:
                 self.login_window.destroy()
                 messagebox.showerror("Acceso denegado", "Credenciales incorrectas")
         
-        login_button = tk.Button(
+        # Botón Ingresar - MÁS GRANDE
+        login_button = customtkinter.CTkButton(
             login_frame,
             text="Ingresar",
-            font=("Helvetica", 11),
-            bg="#1f5c87",
-            fg="white",
-            relief="flat",
-            height=2,
-            width=15,
+            font=("Helvetica", 12, "bold"),
+            fg_color="#1f5c87",
+            hover_color="#144a6b",
+            height=40,
+            width=200,
             command=check_credentials_local
         )
-        login_button.grid(row=4, column=0, columnspan=2, pady=15)
+        login_button.grid(row=3, column=0, pady=20)
         
         self.login_window.bind("<Return>", lambda event: check_credentials_local())
         self.login_window.grab_set()
@@ -308,11 +418,7 @@ class SerialInterface:
             self.logo_cubiscan = self.logo_cubiscan.subsample(20, 20)
         except:
             self.logo_cubiscan = None
-        
-        try:
-            self.logo_deprisa = tk.PhotoImage(file="Icons/Deprisa_logo.png")
-        except:
-            self.logo_deprisa = None
+    
     
     def cargar_icono(self):
         """Cargar icono de la aplicación"""
@@ -327,6 +433,19 @@ class SerialInterface:
         self.db.desconectar()
         self.root.destroy()
 
+    def filtrar_combobox(self, event, combobox, values):
+        """Filtra los valores del combobox basado en lo que escribe el usuario"""
+        typed = event.widget.get().lower()
+        
+        if typed == '':
+            combobox['values'] = values
+        else:
+            filtered = [item for item in values if typed in item.lower()]
+            combobox['values'] = filtered
+        
+        # Mostrar la lista desplegable
+        combobox.event_generate('<Button-1>')
+
     def create_medicion_tab(self):
         """Crea la interfaz de medición con QR"""
         # Configuración del frame principal
@@ -339,38 +458,49 @@ class SerialInterface:
         main_container.grid(row=0, column=0, sticky="nsew")
         main_container.columnconfigure(0, weight=1)
         
-        # Frame de configuración
+        # Frame de configuración - MEJORADO Y SIMÉTRICO
         config_frame = tk.LabelFrame(
             main_container,
-            text="CONFIGURACIÓN DE CÓDIGOS QR",
+            text="CONFIGURACIÓN DE LA ORDEN",
             labelanchor="nw",
             bg="#f0f0f0",
             font=('Helvetica', 12, 'bold')
         )
         config_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        
+        # Configurar grid del config_frame para distribución simétrica
+        config_frame.columnconfigure(0, weight=1)
         config_frame.columnconfigure(1, weight=1)
-        config_frame.columnconfigure(3, weight=1)
+        config_frame.columnconfigure(2, weight=1)
+        
+        # Container para los campos (más organizado)
+        campos_container = tk.Frame(config_frame, bg="#f0f0f0")
+        campos_container.grid(row=0, column=0, columnspan=3, sticky="ew", padx=20, pady=15)
+        campos_container.columnconfigure(0, weight=1)
+        campos_container.columnconfigure(1, weight=1)
+        campos_container.columnconfigure(2, weight=1)
         
         # Destino
-        tk.Label(config_frame, text="Destino:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
-            row=0, column=0, padx=10, pady=10, sticky="w"
-        )
+        destino_frame = tk.Frame(campos_container, bg="#f0f0f0")
+        destino_frame.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
         
-        self.destino_combo = ttk.Combobox(config_frame, width=25, font=('Helvetica', 11))
-        self.destino_combo.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        tk.Label(destino_frame, text="Destino:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).pack(anchor="w")
+        self.destino_combo = ttk.Combobox(destino_frame, font=('Helvetica', 11))
+        self.destino_combo.pack(fill="x", pady=(5, 0))
         
         # Cliente
-        tk.Label(config_frame, text="Cliente:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
-            row=0, column=2, padx=10, pady=10, sticky="w"
-        )
+        cliente_frame = tk.Frame(campos_container, bg="#f0f0f0")
+        cliente_frame.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
         
-        self.cliente_combo = ttk.Combobox(config_frame, width=25, font=('Helvetica', 11))
-        self.cliente_combo.grid(row=0, column=3, padx=10, pady=10, sticky="ew")
+        tk.Label(cliente_frame, text="Cliente:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).pack(anchor="w")
+        self.cliente_combo = ttk.Combobox(cliente_frame, font=('Helvetica', 11))
+        self.cliente_combo.pack(fill="x", pady=(5, 0))
         
-        # Cantidad de Pallets
-        tk.Label(config_frame, text="Cantidad de Pallets:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
-            row=1, column=0, padx=10, pady=10, sticky="w"
-        )
+        # Cantidad de Pallets - MÁS PEQUEÑO
+        cantidad_frame = tk.Frame(campos_container, bg="#f0f0f0")
+        cantidad_frame.grid(row=0, column=2, padx=10, pady=5, sticky="ew")
+        
+        tk.Label(cantidad_frame, text="Cantidad de Pallets:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).pack(anchor="w")
         
         # Validación para solo números
         def validar_numero(char):
@@ -378,26 +508,33 @@ class SerialInterface:
         
         vcmd = (self.root.register(validar_numero), '%S')
         
-        self.cantidad_entry = tk.Entry(config_frame, width=15, font=('Helvetica', 11), validate='key', validatecommand=vcmd)
-        self.cantidad_entry.grid(row=1, column=1, padx=10, pady=10, sticky="w")
+        # Entry más pequeño para cantidad
+        cantidad_container = tk.Frame(cantidad_frame, bg="#f0f0f0")
+        cantidad_container.pack(fill="x", pady=(5, 0))
         
-        # Botón Generar
+        self.cantidad_entry = tk.Entry(cantidad_container, font=('Helvetica', 11), validate='key', validatecommand=vcmd, width=10)
+        self.cantidad_entry.pack(side="left")
+        
+        # Botón Generar - CENTRADO
+        button_container = tk.Frame(config_frame, bg="#f0f0f0")
+        button_container.grid(row=1, column=0, columnspan=3, pady=20)
+        
         self.generar_button = customtkinter.CTkButton(
-            config_frame,
+            button_container,
             text="Generar Códigos",
             command=self.generar_qr_codes,
-            width=150,
-            height=40,
-            font=("Helvetica", 12, "bold"),
+            width=250,
+            height=45,
+            font=("Helvetica", 13, "bold"),
             fg_color="#1f5c87",
             hover_color="#144a6b"
         )
-        self.generar_button.grid(row=1, column=2, columnspan=2, padx=10, pady=10)
+        self.generar_button.pack()
         
         # Frame para mostrar QR
         self.qr_frame = tk.LabelFrame(
             main_container,
-            text="CÓDIGOS QR GENERADOS",
+            text="CÓDIGOS",
             labelanchor="nw",
             bg="#f0f0f0",
             font=('Helvetica', 12, 'bold')
@@ -410,18 +547,19 @@ class SerialInterface:
         qr_container = tk.Frame(self.qr_frame, bg="#f0f0f0")
         qr_container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
         qr_container.columnconfigure(0, weight=1)
+        qr_container.rowconfigure(0, weight=1)
         
         # Label para mostrar QR
-        self.qr_label = tk.Label(qr_container, bg="#f0f0f0", text="Genere códigos QR para visualizar")
-        self.qr_label.grid(row=0, column=0, pady=20)
+        self.qr_label = tk.Label(qr_container, bg="#f0f0f0", text="Códigos a visualizar")
+        self.qr_label.grid(row=0, column=0, pady=10, sticky="nsew")
         
-        # Frame de navegación
-        nav_frame = tk.Frame(qr_container, bg="#f0f0f0")
-        nav_frame.grid(row=1, column=0, pady=10)
+        # Frame de navegación - CENTRADO Y OCULTO INICIALMENTE
+        self.nav_frame = tk.Frame(qr_container, bg="#f0f0f0")
+        # NO hacer grid inicialmente - estará oculto
         
         # Botones de navegación
         self.prev_button = customtkinter.CTkButton(
-            nav_frame,
+            self.nav_frame,
             text="◀ Anterior",
             command=self.qr_anterior,
             width=100,
@@ -432,11 +570,11 @@ class SerialInterface:
         )
         self.prev_button.pack(side="left", padx=5)
         
-        self.qr_info_label = tk.Label(nav_frame, text="", bg="#f0f0f0", font=('Helvetica', 11, 'bold'))
+        self.qr_info_label = tk.Label(self.nav_frame, text="", bg="#f0f0f0", font=('Helvetica', 11, 'bold'))
         self.qr_info_label.pack(side="left", padx=20)
         
         self.next_button = customtkinter.CTkButton(
-            nav_frame,
+            self.nav_frame,
             text="Siguiente ▶",
             command=self.qr_siguiente,
             width=100,
@@ -447,15 +585,246 @@ class SerialInterface:
         )
         self.next_button.pack(side="left", padx=5)
         
-        # Inicialmente ocultar navegación
-        self.prev_button.configure(state="disabled")
-        self.next_button.configure(state="disabled")
+        # Frame de recibo - MÁS COMPACTO
+        self.recibo_frame = tk.LabelFrame(
+            main_container,
+            text="RECIBO",
+            labelanchor="nw",
+            bg="#f0f0f0",
+            font=('Helvetica', 12, 'bold'),
+            height=120
+        )
+        # No hacer grid inicialmente
         
-        # Permitir que el frame QR se expanda
-        main_container.rowconfigure(1, weight=1)
+        # Contenido del frame de recibo - MÁS COMPACTO
+        recibo_container = tk.Frame(self.recibo_frame, bg="#f0f0f0")
+        recibo_container.grid(row=0, column=0, sticky="ew", padx=20, pady=10)
+        recibo_container.columnconfigure(1, weight=1)
+        recibo_container.columnconfigure(3, weight=1)
+        
+        # Primera verificación
+        tk.Label(recibo_container, text="N° recibo:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+            row=0, column=0, padx=10, pady=5, sticky="w"
+        )
+        
+        self.verif1_entry = tk.Entry(recibo_container, width=20, font=('Helvetica', 11))
+        self.verif1_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+        
+        # Segunda verificación
+        tk.Label(recibo_container, text="Confirmar N° recibo:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+            row=0, column=2, padx=10, pady=5, sticky="w"
+        )
+        
+        self.verif2_entry = tk.Entry(recibo_container, width=20, font=('Helvetica', 11))
+        self.verif2_entry.grid(row=0, column=3, padx=10, pady=5, sticky="ew")
+        
+        # Botón Cerrar Orden
+        self.cerrar_orden_button = customtkinter.CTkButton(
+            recibo_container,
+            text="Cerrar Orden",
+            command=self.cerrar_orden,
+            width=150,
+            height=35,
+            font=("Helvetica", 11, "bold"),
+            fg_color="#d32f2f",
+            hover_color="#b71c1c"
+        )
+        self.cerrar_orden_button.grid(row=1, column=0, columnspan=4, pady=5)
+        
+        # Deshabilitar copiar/pegar en los campos de verificación
+        def bloquear_paste(event):
+            return "break"
+        
+        self.verif1_entry.bind("<Control-v>", bloquear_paste)
+        self.verif1_entry.bind("<Control-V>", bloquear_paste)
+        self.verif1_entry.bind("<Button-3>", bloquear_paste)
+        
+        self.verif2_entry.bind("<Control-v>", bloquear_paste)
+        self.verif2_entry.bind("<Control-V>", bloquear_paste)
+        self.verif2_entry.bind("<Button-3>", bloquear_paste)
+        
+        # Configurar pesos para que QR se expanda pero recibo sea compacto
+        main_container.rowconfigure(1, weight=3)
+        main_container.rowconfigure(2, weight=0)
         
         # Actualizar comboboxes
         self.actualizar_comboboxes()
+
+    def create_busqueda_tab(self):
+        """Crea la interfaz de búsqueda"""
+        self.busqueda_frame.configure(bg="#f0f0f0")
+        self.busqueda_frame.columnconfigure(0, weight=1)
+        self.busqueda_frame.rowconfigure(0, weight=1)
+        
+        # Contenedor principal
+        busqueda_container = tk.Frame(self.busqueda_frame, bg="#f0f0f0", padx=20, pady=20)
+        busqueda_container.grid(row=0, column=0, sticky="nsew")
+        busqueda_container.columnconfigure(0, weight=1)
+        busqueda_container.rowconfigure(1, weight=1)
+        
+        # Frame de filtros
+        filtros_frame = tk.LabelFrame(
+            busqueda_container,
+            text="FILTROS DE BÚSQUEDA",
+            labelanchor="nw",
+            bg="#f0f0f0",
+            font=('Helvetica', 12, 'bold')
+        )
+        filtros_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        filtros_frame.columnconfigure(1, weight=1)
+        filtros_frame.columnconfigure(3, weight=1)
+        
+        # Filtro por Recibo
+        tk.Label(filtros_frame, text="Recibo:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+            row=0, column=0, padx=10, pady=10, sticky="w"
+        )
+        
+        self.filtro_recibo_entry = tk.Entry(filtros_frame, width=25, font=('Helvetica', 11))
+        self.filtro_recibo_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        
+        # Filtro por Fecha - CON CALENDARIO
+        tk.Label(filtros_frame, text="Fecha:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+            row=0, column=2, padx=10, pady=10, sticky="w"
+        )
+        
+        self.filtro_fecha_entry = DateEntry(
+            filtros_frame, 
+            width=12, 
+            background='darkblue',
+            foreground='white', 
+            borderwidth=2, 
+            date_pattern='yyyy-mm-dd',
+            font=('Helvetica', 11)
+        )
+        self.filtro_fecha_entry.grid(row=0, column=3, padx=10, pady=10, sticky="ew")
+        
+        # Botones
+        botones_frame = tk.Frame(filtros_frame, bg="#f0f0f0")
+        botones_frame.grid(row=1, column=0, columnspan=4, pady=10)
+        
+        self.buscar_button = customtkinter.CTkButton(
+            botones_frame,
+            text="Buscar",
+            command=self.buscar_registros,
+            width=120,
+            height=35,
+            font=("Helvetica", 11, "bold"),
+            fg_color="#1f5c87",
+            hover_color="#144a6b"
+        )
+        self.buscar_button.pack(side="left", padx=5)
+        
+        self.limpiar_filtros_button = customtkinter.CTkButton(
+            botones_frame,
+            text="Limpiar",
+            command=self.limpiar_filtros,
+            width=120,
+            height=35,
+            font=("Helvetica", 11, "bold"),
+            fg_color="#4a636f",
+            hover_color="#5b7684"
+        )
+        self.limpiar_filtros_button.pack(side="left", padx=5)
+        
+        # Frame de resultados
+        resultados_frame = tk.LabelFrame(
+            busqueda_container,
+            text="RESULTADOS",
+            labelanchor="nw",
+            bg="#f0f0f0",
+            font=('Helvetica', 12, 'bold')
+        )
+        resultados_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        resultados_frame.columnconfigure(0, weight=1)
+        resultados_frame.rowconfigure(0, weight=1)
+        
+        # Treeview para mostrar resultados
+        tree_frame = tk.Frame(resultados_frame, bg="#f0f0f0")
+        tree_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+        
+        # Configurar Treeview con estilo
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview.Heading", 
+                       background="#1f5c87", 
+                       foreground="white", 
+                       font=('Helvetica', 11, 'bold'))
+        style.configure("Treeview", 
+                       background="#f9f9f9",
+                       foreground="black",
+                       rowheight=25,
+                       fieldbackground="#f9f9f9")
+        style.map("Treeview", 
+                 background=[('selected', '#347dba')])
+        
+        columns = ("Recibo", "Código", "Fecha", "Hora")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15)
+        
+        # Configurar columnas
+        self.tree.heading("Recibo", text="Recibo")
+        self.tree.heading("Código", text="Código")
+        self.tree.heading("Fecha", text="Fecha")
+        self.tree.heading("Hora", text="Hora")
+        
+        self.tree.column("Recibo", width=200)
+        self.tree.column("Código", width=300)
+        self.tree.column("Fecha", width=120)
+        self.tree.column("Hora", width=120)
+        
+        # Scrollbars
+        v_scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        h_scrollbar = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        # Grid del Treeview y scrollbars
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        v_scrollbar.grid(row=0, column=1, sticky="ns")
+        h_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        # Label para mostrar cantidad de resultados
+        self.resultados_label = tk.Label(
+            resultados_frame,
+            text="",
+            bg="#f0f0f0",
+            font=('Helvetica', 10),
+            fg="#666666"
+        )
+        self.resultados_label.grid(row=1, column=0, pady=5)
+
+    def buscar_registros(self):
+        """Realiza la búsqueda de registros"""
+        recibo = self.filtro_recibo_entry.get().strip()
+        fecha = self.filtro_fecha_entry.get()  # Ya viene en formato YYYY-MM-DD
+        
+        # Limpiar resultados anteriores
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # Buscar en la base de datos
+        resultados = self.db.buscar_registros(recibo if recibo else None, fecha if fecha else None)
+        
+        # Mostrar resultados
+        for registro in resultados:
+            self.tree.insert("", "end", values=registro)
+        
+        # Actualizar label de resultados
+        self.resultados_label.configure(text=f"Se encontraron {len(resultados)} registros")
+        
+        if len(resultados) == 0:
+            messagebox.showinfo("Búsqueda", "No se encontraron registros con los filtros especificados")
+
+    def limpiar_filtros(self):
+        """Limpia los filtros de búsqueda"""
+        self.filtro_recibo_entry.delete(0, tk.END)
+        self.filtro_fecha_entry.set_date(datetime.now().date())
+        
+        # Limpiar resultados
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        self.resultados_label.configure(text="")
     
     def actualizar_comboboxes(self):
         """Actualiza los comboboxes con los valores de configuración"""
@@ -468,9 +837,16 @@ class SerialInterface:
         clientes = self.clave_cliente_var.get().split('\n') if self.clave_cliente_var.get() else []
         clientes = [c.strip() for c in clientes if c.strip()]
         self.cliente_combo['values'] = clientes
+        
+        # Configurar autocompletado
+        if hasattr(self, 'destino_combo'):
+            self.destino_combo.bind('<KeyRelease>', lambda e: self.filtrar_combobox(e, self.destino_combo, destinos))
+        
+        if hasattr(self, 'cliente_combo'):
+            self.cliente_combo.bind('<KeyRelease>', lambda e: self.filtrar_combobox(e, self.cliente_combo, clientes))
     
     def generar_qr_codes(self):
-        """Genera los códigos QR según la configuración"""
+        """Genera los códigos QR o de barras según la configuración"""
         try:
             # Validar datos
             destino = self.destino_combo.get().strip()
@@ -491,50 +867,75 @@ class SerialInterface:
             
             cantidad = int(cantidad)
             
-            # Generar timestamp
+            # Generar timestamp y recibo único
             now = datetime.now()
             timestamp = now.strftime("%d%m%y%H%M%S")
+            self.recibo_actual = f"{timestamp}_{destino}_{cliente}"
             
-            # Generar códigos QR
+            # Generar códigos según tipo configurado
             self.qr_codes = []
+            tipo_codigo = self.tipo_codigo_var.get()
+            
             for i in range(1, cantidad + 1):
-                qr_text = f"{timestamp}_{destino}_{cliente}_{i}\n"
+                codigo_text = f"{timestamp}_{destino}_{cliente}_{i}"
                 
-                # Crear QR
-                qr = qrcode.QRCode(
-                    version=1,
-                    error_correction=qrcode.constants.ERROR_CORRECT_L,
-                    box_size=10,
-                    border=4,
-                )
-                qr.add_data(qr_text)
-                qr.make(fit=True)
-                
-                # Crear imagen
-                img = qr.make_image(fill_color="black", back_color="white")
+                if tipo_codigo == "QR":
+                    # Crear QR
+                    qr = qrcode.QRCode(
+                        version=1,
+                        error_correction=qrcode.constants.ERROR_CORRECT_L,
+                        box_size=10,
+                        border=4,
+                    )
+                    qr.add_data(codigo_text)
+                    qr.make(fit=True)
+                    
+                    # Crear imagen
+                    img = qr.make_image(fill_color="black", back_color="white")
+                    
+                else:  # BARCODE
+                    # Crear código de barras (Code128)
+                    try:
+                        code128 = barcode.get_barcode_class('code128')
+                        barcode_instance = code128(codigo_text, writer=ImageWriter())
+                        
+                        # Crear imagen del código de barras
+                        img = barcode_instance.render()
+                        
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Error al generar código de barras: {e}")
+                        return
                 
                 # Redimensionar para mostrar
-                img = img.resize((300, 300), Image.Resampling.LANCZOS)
+                if tipo_codigo == "QR":
+                    img = img.resize((300, 300), Image.Resampling.LANCZOS)
+                else:
+                    # Para códigos de barras, ajustar proporcionalmente
+                    img = img.resize((400, 200), Image.Resampling.LANCZOS)
                 
                 # Convertir a PhotoImage
                 photo = ImageTk.PhotoImage(img)
                 
                 self.qr_codes.append({
                     'photo': photo,
-                    'text': qr_text,
-                    'numero': i
+                    'text': codigo_text,
+                    'numero': i,
+                    'codigo': codigo_text,
+                    'tipo': tipo_codigo
                 })
             
-            # Mostrar primer QR
+            # Mostrar primer código
             self.qr_actual = 0
             self.mostrar_qr_actual()
             
-            # Habilitar navegación
-            self.prev_button.configure(state="normal")
-            self.next_button.configure(state="normal")
+            # MOSTRAR las flechas de navegación
+            self.nav_frame.grid(row=1, column=0, pady=5)
+            
+            # Mostrar frame de recibo
+            self.recibo_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(5, 10))
             
         except Exception as e:
-            messagebox.showerror("Error", f"Error al generar códigos QR: {e}")
+            messagebox.showerror("Error", f"Error al generar códigos: {e}")
     
     def mostrar_qr_actual(self):
         """Muestra el QR actual"""
@@ -566,6 +967,73 @@ class SerialInterface:
             self.qr_actual += 1
             self.mostrar_qr_actual()
     
+    def cerrar_orden(self):
+        """Cierra la orden verificando que los campos coincidan y guarda en DB"""
+        verif1 = self.verif1_entry.get().strip()
+        verif2 = self.verif2_entry.get().strip()
+        
+        if not verif1 or not verif2:
+            messagebox.showerror("Error", "Debe llenar ambos campos de verificación")
+            return
+        
+        if verif1 != verif2:
+            messagebox.showerror("Error", "Los valores de verificación no coinciden")
+            return
+        
+        # Guardar registros en la base de datos
+        try:
+            now = datetime.now()
+            fecha = now.strftime("%Y-%m-%d")
+            hora = now.strftime("%H:%M:%S")
+            
+            registros_guardados = 0
+            
+            # Guardar cada QR como un registro separado
+            for qr_data in self.qr_codes:
+                if self.db.guardar_registro(
+                    recibo=verif1,
+                    codigo=qr_data['codigo'],
+                    fecha=fecha,
+                    hora=hora
+                ):
+                    registros_guardados += 1
+            
+            # Guardar cambios en archivo encriptado
+            self.db.guardar_cambios_db()
+            
+            # Limpiar campos
+            self.limpiar_campos()
+            messagebox.showinfo("Éxito", f"Orden cerrada correctamente. {registros_guardados} registros guardados.")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al guardar registros: {e}")
+    
+    def limpiar_campos(self):
+        """Limpia todos los campos para un nuevo registro"""
+        # Limpiar comboboxes
+        self.destino_combo.set("")
+        self.cliente_combo.set("")
+        
+        # Limpiar cantidad
+        self.cantidad_entry.delete(0, tk.END)
+        
+        # Limpiar verificaciones
+        self.verif1_entry.delete(0, tk.END)
+        self.verif2_entry.delete(0, tk.END)
+        
+        # Ocultar frame de recibo
+        self.recibo_frame.grid_forget()
+        
+        # OCULTAR las flechas de navegación
+        self.nav_frame.grid_forget()
+        
+        # Limpiar QR
+        self.qr_codes = []
+        self.qr_actual = 0
+        self.recibo_actual = ""
+        self.qr_label.configure(image="", text="Genere códigos QR para visualizar")
+        self.qr_info_label.configure(text="")
+    
     def create_configuracion_tab(self):
         """Crea la interfaz de configuración"""
         self.configuracion_frame.configure(bg="#f0f0f0")
@@ -575,7 +1043,7 @@ class SerialInterface:
         config_container = tk.Frame(self.configuracion_frame, bg="#f0f0f0", padx=20, pady=20)
         config_container.grid(row=0, column=0, sticky="nsew")
         
-        # Frame de configuración
+        # Frame de configuración de datos
         ws_frame = tk.LabelFrame(
             config_container, 
             text="CONFIGURACIÓN DE DATOS", 
@@ -587,33 +1055,77 @@ class SerialInterface:
         ws_frame.columnconfigure(1, weight=1)
         ws_frame.columnconfigure(3, weight=1)
         
-        # Motivos
-        tk.Label(ws_frame, text="Motivos:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+        # Destino
+        tk.Label(ws_frame, text="Destino:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
             row=0, column=0, padx=10, pady=5, sticky="nw"
         )
         
-        self.motivos_text = tk.Text(ws_frame, width=30, height=8, font=('Helvetica', 10))
-        self.motivos_text.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-        
-        # Destino
-        tk.Label(ws_frame, text="Destino:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
-            row=0, column=2, padx=10, pady=5, sticky="nw"
-        )
-        
-        self.destino_text = tk.Text(ws_frame, width=30, height=8, font=('Helvetica', 10))
-        self.destino_text.grid(row=0, column=3, padx=10, pady=5, sticky="ew")
+        self.destino_text = tk.Text(ws_frame, width=40, height=10, font=('Helvetica', 10))
+        self.destino_text.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
         
         # Clave Cliente
         tk.Label(ws_frame, text="Clave Cliente:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
-            row=1, column=0, padx=10, pady=5, sticky="nw"
+            row=0, column=2, padx=10, pady=5, sticky="nw"
         )
         
-        self.clave_cliente_text = tk.Text(ws_frame, width=30, height=8, font=('Helvetica', 10))
-        self.clave_cliente_text.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+        self.clave_cliente_text = tk.Text(ws_frame, width=40, height=10, font=('Helvetica', 10))
+        self.clave_cliente_text.grid(row=0, column=3, padx=10, pady=5, sticky="ew")
+        
+        # Instrucciones
+        instrucciones = tk.Label(
+            ws_frame,
+            text="Instrucciones: Ingrese cada elemento en una línea separada sin tildes",
+            bg="#f0f0f0",
+            font=('Helvetica', 10, 'italic'),
+            fg="#666666"
+        )
+        instrucciones.grid(row=1, column=0, columnspan=4, pady=10)
+        
+        # Frame de configuración de códigos
+        tipo_codigo_frame = tk.LabelFrame(
+            config_container,
+            text="CONFIGURACIÓN DE CÓDIGOS",
+            labelanchor="nw",
+            bg="#f0f0f0",
+            font=('Helvetica', 11, 'bold')
+        )
+        tipo_codigo_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+        
+        tk.Label(tipo_codigo_frame, text="Tipo de código a generar:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+            row=0, column=0, padx=10, pady=10, sticky="w"
+        )
+        
+        # Checkbox para QR
+        self.qr_var = tk.BooleanVar()
+        self.qr_checkbox = tk.Checkbutton(
+            tipo_codigo_frame,
+            text="Códigos 2D (QR)",
+            variable=self.qr_var,
+            bg="#f0f0f0",
+            font=('Helvetica', 10),
+            command=self.on_qr_select
+        )
+        self.qr_checkbox.grid(row=1, column=0, padx=20, pady=5, sticky="w")
+        
+        # Checkbox para código de barras
+        self.barcode_var = tk.BooleanVar()
+        self.barcode_checkbox = tk.Checkbutton(
+            tipo_codigo_frame,
+            text="Códigos 1D (Lineales)",
+            variable=self.barcode_var,
+            bg="#f0f0f0",
+            font=('Helvetica', 10),
+            command=self.on_barcode_select
+        )
+        self.barcode_checkbox.grid(row=2, column=0, padx=20, pady=5, sticky="w")
+        
+        # Por defecto QR seleccionado
+        self.qr_var.set(True)
+        self.tipo_codigo_var.set("QR")
         
         # Botón Guardar
         save_button = customtkinter.CTkButton(
-            ws_frame,
+            config_container,
             text="Guardar Configuración",
             command=self.guardar_configuracion_manual,
             width=200,
@@ -622,21 +1134,29 @@ class SerialInterface:
             fg_color="#1f5c87",
             hover_color="#144a6b"
         )
-        save_button.grid(row=1, column=2, columnspan=2, padx=10, pady=20)
+        save_button.grid(row=2, column=0, columnspan=2, pady=20)
         
         # Vincular eventos de cambio
-        def update_motivos_var(event=None):
-            self.motivos_var.set(self.motivos_text.get("1.0", "end-1c"))
-        
         def update_destino_var(event=None):
             self.destino_var.set(self.destino_text.get("1.0", "end-1c"))
         
         def update_clave_cliente_var(event=None):
             self.clave_cliente_var.set(self.clave_cliente_text.get("1.0", "end-1c"))
         
-        self.motivos_text.bind("<KeyRelease>", update_motivos_var)
         self.destino_text.bind("<KeyRelease>", update_destino_var)
         self.clave_cliente_text.bind("<KeyRelease>", update_clave_cliente_var)
+    
+    def on_qr_select(self):
+        """Maneja la selección de QR"""
+        if self.qr_var.get():
+            self.barcode_var.set(False)
+            self.tipo_codigo_var.set("QR")
+    
+    def on_barcode_select(self):
+        """Maneja la selección de código de barras"""
+        if self.barcode_var.get():
+            self.qr_var.set(False)
+            self.tipo_codigo_var.set("BARCODE")
     
     def guardar_configuracion_manual(self):
         """Guarda la configuración manualmente"""
@@ -650,11 +1170,6 @@ class SerialInterface:
         try:
             config.read('configuracion.ini')
             if 'Configuracion' in config:
-                # Cargar motivos
-                motivos_guardados = self.desencriptar(config['Configuracion'].get('motivos_var', ''))
-                if motivos_guardados:
-                    self.motivos_var.set(motivos_guardados)
-                
                 # Cargar destino
                 destino_guardado = self.desencriptar(config['Configuracion'].get('destino_var', ''))
                 if destino_guardado:
@@ -665,6 +1180,11 @@ class SerialInterface:
                 if clave_cliente_guardada:
                     self.clave_cliente_var.set(clave_cliente_guardada)
                 
+                # Cargar tipo de código
+                tipo_codigo_guardado = self.desencriptar(config['Configuracion'].get('tipo_codigo_var', 'QR'))
+                if tipo_codigo_guardado:
+                    self.tipo_codigo_var.set(tipo_codigo_guardado)
+                
                 # Actualizar widgets después de crear la interfaz
                 self.root.after(500, self.actualizar_texto_configuracion)
         except Exception as e:
@@ -672,10 +1192,6 @@ class SerialInterface:
 
     def actualizar_texto_configuracion(self):
         """Actualiza los widgets de texto con los valores cargados"""
-        if hasattr(self, 'motivos_text'):
-            self.motivos_text.delete("1.0", tk.END)
-            self.motivos_text.insert("1.0", self.motivos_var.get())
-        
         if hasattr(self, 'destino_text'):
             self.destino_text.delete("1.0", tk.END)
             self.destino_text.insert("1.0", self.destino_var.get())
@@ -683,6 +1199,16 @@ class SerialInterface:
         if hasattr(self, 'clave_cliente_text'):
             self.clave_cliente_text.delete("1.0", tk.END)
             self.clave_cliente_text.insert("1.0", self.clave_cliente_var.get())
+        
+        # Actualizar checkboxes de tipo de código
+        if hasattr(self, 'qr_var') and hasattr(self, 'barcode_var'):
+            tipo_codigo = self.tipo_codigo_var.get()
+            if tipo_codigo == "QR":
+                self.qr_var.set(True)
+                self.barcode_var.set(False)
+            else:
+                self.qr_var.set(False)
+                self.barcode_var.set(True)
         
         # Actualizar comboboxes
         self.actualizar_comboboxes()
@@ -694,10 +1220,6 @@ class SerialInterface:
             config.add_section('Configuracion')
         
         # Actualizar variables con el contenido actual de los widgets
-        if hasattr(self, 'motivos_text'):
-            motivos_texto = self.motivos_text.get("1.0", "end-1c")
-            self.motivos_var.set(motivos_texto)
-        
         if hasattr(self, 'destino_text'):
             destino_texto = self.destino_text.get("1.0", "end-1c")
             self.destino_var.set(destino_texto)
@@ -707,9 +1229,9 @@ class SerialInterface:
             self.clave_cliente_var.set(clave_cliente_texto)
         
         # Guardar valores encriptados
-        config['Configuracion']['motivos_var'] = self.encriptar(self.motivos_var.get())
         config['Configuracion']['destino_var'] = self.encriptar(self.destino_var.get())
         config['Configuracion']['clave_cliente_var'] = self.encriptar(self.clave_cliente_var.get())
+        config['Configuracion']['tipo_codigo_var'] = self.encriptar(self.tipo_codigo_var.get())
         
         # Guardar último puerto si existe
         if hasattr(self, 'puertos_combobox'):
@@ -746,6 +1268,15 @@ if __name__ == "__main__":
     # Verificar que existe la base de datos encriptada
     if not os.path.exists("Montradb.db"):
         messagebox.showerror("Error", "No se encuentra la base de datos encriptada 'Montradb.db'")
+        exit()
+    
+    # Verificar dependencias
+    try:
+        import tkcalendar
+        import barcode
+    except ImportError as e:
+        missing_lib = str(e).split("'")[1]
+        messagebox.showerror("Error", f"Falta instalar la librería: {missing_lib}\n\nEjecute: pip install {missing_lib}")
         exit()
     
     # Iniciar aplicación
