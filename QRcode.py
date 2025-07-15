@@ -303,9 +303,9 @@ class SerialInterface:
         self.login_window.title("Acceso")
         
         # Ventana más grande
-        position_x = int(self.root.winfo_x() + (self.root.winfo_width() / 2) - (400 / 2))
-        position_y = int(self.root.winfo_y() + (self.root.winfo_height() / 2) - (350 / 2))
-        self.login_window.geometry(f"{400}x{350}+{position_x}+{position_y}")
+        position_x = int(self.root.winfo_x() + (self.root.winfo_width() / 2) - (300 / 2))
+        position_y = int(self.root.winfo_y() + (self.root.winfo_height() / 2) - (250 / 2))
+        self.login_window.geometry(f"{300}x{250}+{position_x}+{position_y}")
         self.login_window.resizable(False, False)
         self.login_window.attributes("-topmost", True)
         self.login_window.configure(bg="#f0f0f0")
@@ -319,16 +319,7 @@ class SerialInterface:
         login_frame = tk.Frame(self.login_window, bg="#f0f0f0", padx=30, pady=30)
         login_frame.pack(fill="both", expand=True)
         login_frame.columnconfigure(0, weight=1)
-        
-        # Título
-        title_label = tk.Label(
-            login_frame, 
-            text="Ingrese sus Credenciales", 
-            font=("Helvetica", 14, "bold"),
-            bg="#f0f0f0"
-        )
-        title_label.grid(row=1, column=0, pady=(0, 30))
-        
+
         # Container para campos
         campos_container = tk.Frame(login_frame, bg="#f0f0f0")
         campos_container.grid(row=2, column=0, sticky="ew", pady=(0, 20))
@@ -418,7 +409,11 @@ class SerialInterface:
             self.logo_cubiscan = self.logo_cubiscan.subsample(20, 20)
         except:
             self.logo_cubiscan = None
-    
+        
+        try:
+            self.logo_deprisa = tk.PhotoImage(file="Icons/Deprisa_logo.png")
+        except:
+            self.logo_deprisa = None
     
     def cargar_icono(self):
         """Cargar icono de la aplicación"""
@@ -434,17 +429,18 @@ class SerialInterface:
         self.root.destroy()
 
     def filtrar_combobox(self, event, combobox, values):
-        """Filtra los valores del combobox basado en lo que escribe el usuario"""
+        """Filtra los valores del combobox - búsqueda simple sin interrupciones"""
         typed = event.widget.get().lower()
         
         if typed == '':
+            # Si está vacío, mostrar todas las opciones
             combobox['values'] = values
         else:
+            # Filtrar opciones que contengan el texto escrito
             filtered = [item for item in values if typed in item.lower()]
             combobox['values'] = filtered
         
-        # Mostrar la lista desplegable
-        combobox.event_generate('<Button-1>')
+        # NO abrir la lista automáticamente para permitir escritura continua
 
     def create_medicion_tab(self):
         """Crea la interfaz de medición con QR"""
@@ -534,7 +530,7 @@ class SerialInterface:
         # Frame para mostrar QR
         self.qr_frame = tk.LabelFrame(
             main_container,
-            text="CÓDIGOS",
+            text="CÓDIGOS GENERADOS",
             labelanchor="nw",
             bg="#f0f0f0",
             font=('Helvetica', 12, 'bold')
@@ -550,7 +546,7 @@ class SerialInterface:
         qr_container.rowconfigure(0, weight=1)
         
         # Label para mostrar QR
-        self.qr_label = tk.Label(qr_container, bg="#f0f0f0", text="Códigos a visualizar")
+        self.qr_label = tk.Label(qr_container, bg="#f0f0f0", text="Genere códigos para visualizar")
         self.qr_label.grid(row=0, column=0, pady=10, sticky="nsew")
         
         # Frame de navegación - CENTRADO Y OCULTO INICIALMENTE
@@ -603,7 +599,7 @@ class SerialInterface:
         recibo_container.columnconfigure(3, weight=1)
         
         # Primera verificación
-        tk.Label(recibo_container, text="N° recibo:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+        tk.Label(recibo_container, text="Verificación:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
             row=0, column=0, padx=10, pady=5, sticky="w"
         )
         
@@ -611,7 +607,7 @@ class SerialInterface:
         self.verif1_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
         
         # Segunda verificación
-        tk.Label(recibo_container, text="Confirmar N° recibo:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
+        tk.Label(recibo_container, text="Confirmar:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
             row=0, column=2, padx=10, pady=5, sticky="w"
         )
         
@@ -682,21 +678,24 @@ class SerialInterface:
         self.filtro_recibo_entry = tk.Entry(filtros_frame, width=25, font=('Helvetica', 11))
         self.filtro_recibo_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
         
-        # Filtro por Fecha - CON CALENDARIO
+        # Filtro por Fecha - CON CALENDARIO MEJORADO
         tk.Label(filtros_frame, text="Fecha:", bg="#f0f0f0", font=('Helvetica', 11, 'bold')).grid(
             row=0, column=2, padx=10, pady=10, sticky="w"
         )
         
-        self.filtro_fecha_entry = DateEntry(
-            filtros_frame, 
-            width=12, 
-            background='darkblue',
-            foreground='white', 
-            borderwidth=2, 
-            date_pattern='yyyy-mm-dd',
-            font=('Helvetica', 11)
-        )
+        # Crear Entry manual para fecha vacía inicialmente
+        self.filtro_fecha_entry = tk.Entry(filtros_frame, width=15, font=('Helvetica', 11))
         self.filtro_fecha_entry.grid(row=0, column=3, padx=10, pady=10, sticky="ew")
+        
+        # Botón para abrir calendario
+        self.calendario_button = tk.Button(
+            filtros_frame,
+            text="📅",
+            font=('Helvetica', 8),
+            width=3,
+            command=self.abrir_calendario
+        )
+        self.calendario_button.grid(row=0, column=4, padx=(0, 10), pady=10)
         
         # Botones
         botones_frame = tk.Frame(filtros_frame, bg="#f0f0f0")
@@ -793,17 +792,136 @@ class SerialInterface:
         )
         self.resultados_label.grid(row=1, column=0, pady=5)
 
+    def abrir_calendario(self):
+        """Abre una ventana de calendario moderna para seleccionar fecha"""
+        calendario_window = tk.Toplevel(self.root)
+        calendario_window.title("Seleccionar Fecha")
+        calendario_window.geometry("300x350")
+        calendario_window.resizable(False, False)
+        calendario_window.configure(bg="#f0f0f0")
+        calendario_window.attributes("-topmost", True)
+        
+        # Agregar icono
+        try:
+            calendario_window.iconbitmap("Icons/montra.ico")
+        except:
+            pass
+        
+        # Posicionar debajo del campo de fecha
+        filtro_x = self.filtro_fecha_entry.winfo_rootx()
+        filtro_y = self.filtro_fecha_entry.winfo_rooty() + self.filtro_fecha_entry.winfo_height() + 5
+        calendario_window.geometry(f"300x350+{filtro_x}+{filtro_y}")
+        
+        
+        # Contenedor principal
+        main_frame = tk.Frame(calendario_window, bg="#f0f0f0", padx=20, pady=20)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Crear calendario con estilo moderno
+        from tkcalendar import Calendar
+        cal = Calendar(
+            main_frame,
+            selectmode='day',
+            date_pattern='dd-mm-yyyy',
+            background='#1f5c87',
+            foreground='white',
+            borderwidth=0,
+            headersbackground='#144a6b',
+            headersforeground='white',
+            selectbackground='#347dba',
+            selectforeground='white',
+            normalbackground='#f0f0f0',
+            normalforeground='black',
+            weekendbackground='#e8e8e8',
+            weekendforeground='#666666',
+            font=('Helvetica', 10),
+            bordercolor='#1f5c87'
+        )
+        cal.pack(padx=10, pady=10, fill="both", expand=True)
+        
+        # Frame para botones con estilo moderno
+        button_frame = tk.Frame(main_frame, bg="#f0f0f0")
+        button_frame.pack(pady=20)
+        
+        def seleccionar_fecha():
+            fecha_seleccionada = cal.get_date()
+            # Convertir de dd-mm-yyyy a yyyy-mm-dd para la base de datos
+            try:
+                from datetime import datetime
+                fecha_obj = datetime.strptime(fecha_seleccionada, '%d-%m-%Y')
+                fecha_bd = fecha_obj.strftime('%Y-%m-%d')
+                
+                # Mostrar en formato dd-mm-yyyy en el campo
+                self.filtro_fecha_entry.delete(0, tk.END)
+                self.filtro_fecha_entry.insert(0, fecha_seleccionada)
+                # Guardar formato BD para búsqueda
+                self.fecha_bd_formato = fecha_bd
+                
+                calendario_window.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Error al procesar fecha: {e}")
+        
+        def cancelar():
+            calendario_window.destroy()
+        
+        # Botones modernos
+        seleccionar_btn = customtkinter.CTkButton(
+            button_frame,
+            text="Seleccionar",
+            command=seleccionar_fecha,
+            width=120,
+            height=35,
+            font=("Helvetica", 11, "bold"),
+            fg_color="#1f5c87",
+            hover_color="#144a6b"
+        )
+        seleccionar_btn.pack(side="left", padx=10)
+        
+        cancelar_btn = customtkinter.CTkButton(
+            button_frame,
+            text="Cancelar",
+            command=cancelar,
+            width=120,
+            height=35,
+            font=("Helvetica", 11, "bold"),
+            fg_color="#666666",
+            hover_color="#555555"
+        )
+        cancelar_btn.pack(side="left", padx=10)
+        
+        # Enfocar la ventana
+        calendario_window.focus_set()
+        calendario_window.grab_set()
+
     def buscar_registros(self):
         """Realiza la búsqueda de registros"""
         recibo = self.filtro_recibo_entry.get().strip()
-        fecha = self.filtro_fecha_entry.get()  # Ya viene en formato YYYY-MM-DD
+        
+        # Obtener fecha
+        fecha_para_busqueda = None
+        fecha_texto = self.filtro_fecha_entry.get().strip()
+        
+        if fecha_texto:
+            try:
+                # Si hay fecha, usar el formato de BD guardado
+                if hasattr(self, 'fecha_bd_formato'):
+                    fecha_para_busqueda = self.fecha_bd_formato
+                else:
+                    # Intentar convertir manualmente si se escribió
+                    from datetime import datetime
+                    fecha_obj = datetime.strptime(fecha_texto, '%d-%m-%Y')
+                    fecha_para_busqueda = fecha_obj.strftime('%Y-%m-%d')
+            except:
+                # Si no se puede convertir, buscar sin fecha
+                fecha_para_busqueda = None
+                messagebox.showwarning("Advertencia", "Formato de fecha incorrecto. Use dd-mm-yyyy o seleccione del calendario.")
         
         # Limpiar resultados anteriores
         for item in self.tree.get_children():
             self.tree.delete(item)
         
         # Buscar en la base de datos
-        resultados = self.db.buscar_registros(recibo if recibo else None, fecha if fecha else None)
+        resultados = self.db.buscar_registros(recibo if recibo else None, fecha_para_busqueda)
         
         # Mostrar resultados
         for registro in resultados:
@@ -818,7 +936,10 @@ class SerialInterface:
     def limpiar_filtros(self):
         """Limpia los filtros de búsqueda"""
         self.filtro_recibo_entry.delete(0, tk.END)
-        self.filtro_fecha_entry.set_date(datetime.now().date())
+        self.filtro_fecha_entry.delete(0, tk.END)
+        # Limpiar también el formato BD guardado
+        if hasattr(self, 'fecha_bd_formato'):
+            delattr(self, 'fecha_bd_formato')
         
         # Limpiar resultados
         for item in self.tree.get_children():
@@ -826,23 +947,47 @@ class SerialInterface:
         
         self.resultados_label.configure(text="")
     
+    def validar_sin_tildes(self, char):
+        """Valida que no se ingresen tildes ni caracteres especiales"""
+        tildes = 'áéíóúÁÉÍÓÚñÑ'
+        return char not in tildes
+    
     def actualizar_comboboxes(self):
         """Actualiza los comboboxes con los valores de configuración"""
         # Destino
         destinos = self.destino_var.get().split('\n') if self.destino_var.get() else []
         destinos = [d.strip() for d in destinos if d.strip()]
-        self.destino_combo['values'] = destinos
         
         # Cliente
         clientes = self.clave_cliente_var.get().split('\n') if self.clave_cliente_var.get() else []
         clientes = [c.strip() for c in clientes if c.strip()]
-        self.cliente_combo['values'] = clientes
         
-        # Configurar autocompletado
+        # Actualizar valores de comboboxes si existen
         if hasattr(self, 'destino_combo'):
+            self.destino_combo['values'] = destinos
+            
+            # Configurar validación para no tildes
+            vcmd_destino = (self.root.register(self.validar_sin_tildes), '%S')
+            self.destino_combo.configure(validate='key', validatecommand=vcmd_destino)
+        
+        if hasattr(self, 'cliente_combo'):
+            self.cliente_combo['values'] = clientes
+            
+            # Configurar validación para no tildes
+            vcmd_cliente = (self.root.register(self.validar_sin_tildes), '%S')
+            self.cliente_combo.configure(validate='key', validatecommand=vcmd_cliente)
+        
+        # Configurar autocompletado simple
+        if hasattr(self, 'destino_combo'):
+            # Limpiar eventos anteriores
+            self.destino_combo.unbind('<KeyRelease>')
+            # Vincular evento simple
             self.destino_combo.bind('<KeyRelease>', lambda e: self.filtrar_combobox(e, self.destino_combo, destinos))
         
         if hasattr(self, 'cliente_combo'):
+            # Limpiar eventos anteriores
+            self.cliente_combo.unbind('<KeyRelease>')
+            # Vincular evento simple
             self.cliente_combo.bind('<KeyRelease>', lambda e: self.filtrar_combobox(e, self.cliente_combo, clientes))
     
     def generar_qr_codes(self):
@@ -1031,10 +1176,12 @@ class SerialInterface:
         self.qr_codes = []
         self.qr_actual = 0
         self.recibo_actual = ""
-        self.qr_label.configure(image="", text="Genere códigos QR para visualizar")
+        self.qr_label.configure(image="", text="Códigos a visualizar")
         self.qr_info_label.configure(text="")
     
     def create_configuracion_tab(self):
+        
+        self.carpeta_imagenes = tk.StringVar()
         """Crea la interfaz de configuración"""
         self.configuracion_frame.configure(bg="#f0f0f0")
         self.configuracion_frame.columnconfigure(0, weight=1)
@@ -1074,7 +1221,7 @@ class SerialInterface:
         # Instrucciones
         instrucciones = tk.Label(
             ws_frame,
-            text="Instrucciones: Ingrese cada elemento en una línea separada sin tildes",
+            text="Instrucciones: Ingrese cada elemento en una línea separada",
             bg="#f0f0f0",
             font=('Helvetica', 10, 'italic'),
             fg="#666666"
@@ -1134,7 +1281,38 @@ class SerialInterface:
             fg_color="#1f5c87",
             hover_color="#144a6b"
         )
-        save_button.grid(row=2, column=0, columnspan=2, pady=20)
+        save_button.grid(row=3, column=0, columnspan=2, pady=20)
+        
+        # Frame de configuración de códigos
+        carpeta_imagenes_frame= tk.LabelFrame(
+            config_container,
+            text="CARPETA DE IMÁGENES",
+            labelanchor="nw",
+            bg="#f0f0f0",
+            font=('Helvetica', 11, 'bold')
+        )
+        carpeta_imagenes_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=10)
+        
+        tk.Label(carpeta_imagenes_frame, text="Ruta origen imágenes:", bg="#f0f0f0", font=('Helvetica', 11)).grid(
+            row=0, column=0, padx=10, pady=5, sticky="w"
+        )
+        ruta_entry = ttk.Entry(carpeta_imagenes_frame, textvariable=self.carpeta_imagenes, width=30, font=('Helvetica', 11))
+        ruta_entry.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
+        # Botón seleccionar carpeta - estilo compatible con los botones de medición
+        seleccionar_carpeta_button = customtkinter.CTkButton(
+            carpeta_imagenes_frame,
+            text="📁",
+            corner_radius=8,
+            font=("Helvetica", 14),
+            fg_color="#1f5c87",
+            hover_color="#164570",
+            text_color="white",
+            width=40,
+            height=28,
+            command=self.seleccionar_carpeta
+        )
+        seleccionar_carpeta_button.grid(row=0, column=2, padx=10, pady=5, sticky="w")
         
         # Vincular eventos de cambio
         def update_destino_var(event=None):
@@ -1146,6 +1324,12 @@ class SerialInterface:
         self.destino_text.bind("<KeyRelease>", update_destino_var)
         self.clave_cliente_text.bind("<KeyRelease>", update_clave_cliente_var)
     
+    def seleccionar_carpeta(self):
+        folder_selected = filedialog.askdirectory(title="Seleccione una carpeta de destino")
+        if folder_selected:
+            self.carpeta_imagenes.set(folder_selected)
+            
+        
     def on_qr_select(self):
         """Maneja la selección de QR"""
         if self.qr_var.get():
@@ -1184,6 +1368,10 @@ class SerialInterface:
                 tipo_codigo_guardado = self.desencriptar(config['Configuracion'].get('tipo_codigo_var', 'QR'))
                 if tipo_codigo_guardado:
                     self.tipo_codigo_var.set(tipo_codigo_guardado)
+                    
+                carpeta_imagenes_guardada = self.desencriptar(config['Configuracion'].get('carpeta_imagenes', ''))
+                if carpeta_imagenes_guardada:
+                    self.carpeta_imagenes.set(carpeta_imagenes_guardada)
                 
                 # Actualizar widgets después de crear la interfaz
                 self.root.after(500, self.actualizar_texto_configuracion)
@@ -1232,11 +1420,7 @@ class SerialInterface:
         config['Configuracion']['destino_var'] = self.encriptar(self.destino_var.get())
         config['Configuracion']['clave_cliente_var'] = self.encriptar(self.clave_cliente_var.get())
         config['Configuracion']['tipo_codigo_var'] = self.encriptar(self.tipo_codigo_var.get())
-        
-        # Guardar último puerto si existe
-        if hasattr(self, 'puertos_combobox'):
-            ultimo_puerto = self.puertos_combobox.get()
-            config['Configuracion']['ultimo_puerto'] = self.encriptar(ultimo_puerto)
+        config['Configuracion']['carpeta_imagenes'] = self.encriptar(self.carpeta_imagenes.get())
         
         try:
             with open('configuracion.ini', 'w') as configfile:
